@@ -8,7 +8,7 @@ No consume eventos ni sustituye Rabbit Admin. Implementa
 
 Exportar las variables de `.env.example`; Spring no carga `.env` automáticamente.
 `KAFKA_BOOTSTRAP_SERVERS`: localhost:9092/9093/9094 desde el host;
-kafka1:9092,kafka2:9092,kafka3:9092 desde la red Docker compartida.
+kafka1:29092,kafka2:29092,kafka3:29092 desde la red Docker compartida.
 `ENTRA_ISSUER` y `ENTRA_AUDIENCE` son obligatorias. Puerto 8086 por defecto,
 configurable con `SERVER_PORT`. Ejecutar `.\mvnw.cmd spring-boot:run`.
 
@@ -77,6 +77,19 @@ optativa requiere tres brokers locales y Kafka UI `http://localhost:8090`; pasar
 los ocho casos. Admite `-Ddigitalfix.pruebas.kafka.bootstrap=localhost:9092,localhost:9093,localhost:9094`
 y `-Ddigitalfix.pruebas.kafka.ui=http://localhost:8090/api/clusters/digitalfix/topics`.
 Solo acepta destinos loopback.
+
+También pasó el mismo CRUD dentro de la imagen Docker, conectada al listener
+interno `29092`. Para repetirlo en Docker Desktop, tras construir la imagen:
+
+```powershell
+.\mvnw.cmd '-Dtest=KafkaAdminRealTests' '-Ddigitalfix.pruebas.kafka=true' '-Ddigitalfix.pruebas.docker=true' test
+```
+
+La red predeterminada es `digitalfix-kafka-verificacion_kafkanet`; se puede indicar
+otra con `-Ddigitalfix.pruebas.docker.red=NOMBRE`. Esta variante publica la clave
+JWKS pública durante la prueba para que el contenedor acceda por
+`host.docker.internal`. El contenedor aleatorio y el servidor JWKS se retiran al
+terminar; no instala claves de prueba en la imagen ni en la configuración normal.
 
 La integración usa HTTP y JWT RSA/JWKS reales locales, sin AdminClient simulado.
 Crea un tópico aleatorio `validacion-admin-*`, comprueba 3 particiones/RF3/ISR3,

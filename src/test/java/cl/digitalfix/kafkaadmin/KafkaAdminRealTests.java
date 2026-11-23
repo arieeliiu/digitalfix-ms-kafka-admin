@@ -27,6 +27,8 @@ class KafkaAdminRealTests {
     static final HttpServer JWKS = jwks();
     static final String ISSUER = "http://127.0.0.1:" + JWKS.getAddress().getPort();
     @Value("${local.server.port}") int puerto;
+    static String contenedor;
+    int puertoDocker;
     static final tools.jackson.databind.json.JsonMapper JSON = tools.jackson.databind.json.JsonMapper.builder().build();
 
     @DynamicPropertySource static void propiedades(DynamicPropertyRegistry props) {
@@ -39,6 +41,7 @@ class KafkaAdminRealTests {
         props.add("spring.security.oauth2.resourceserver.jwt.audiences", () -> "pruebas-locales");
     }
     @Test void administraTopicoRealConJwtYSeVeEnKafkaUi() throws Exception {
+        if (Boolean.getBoolean("digitalfix.pruebas.docker")) iniciarDocker();
         String nombre = "validacion-admin-" + UUID.randomUUID();
         String ruta = "/api/kafka/topics/" + nombre;
         try (var http = HttpClient.newHttpClient()) {
@@ -91,7 +94,8 @@ class KafkaAdminRealTests {
         }
     }
     HttpResponse<String> pedir(HttpClient http, String metodo, String ruta, String token, String body) throws Exception {
-        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + puerto + ruta)).timeout(Duration.ofSeconds(12));
+        int destino = puertoDocker == 0 ? puerto : puertoDocker;
+        var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + destino + ruta)).timeout(Duration.ofSeconds(12));
         if (token != null) request.header("Authorization", "Bearer " + token);
         if (body != null) request.header("Content-Type", "application/json");
         return http.send(request.method(metodo, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
@@ -107,11 +111,41 @@ class KafkaAdminRealTests {
     static RSAKey clave() { try { return new RSAKeyGenerator(2048).keyID("prueba-local").generate(); } catch (Exception e) { throw new IllegalStateException(e); } }
     static HttpServer jwks() {
         try {
-            var servidor = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            // Solo en la prueba Docker, publicar la clave pública permite usar host.docker.internal.
+            String host = Boolean.getBoolean("digitalfix.pruebas.docker") ? "0.0.0.0" : "127.0.0.1";
+            var servidor = HttpServer.create(new InetSocketAddress(host, 0), 0);
             byte[] datos = new JWKSet(CLAVE.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
             servidor.createContext("/claves", x -> { x.getResponseHeaders().set("Content-Type", "application/json"); x.sendResponseHeaders(200, datos.length); try (var out = x.getResponseBody()) { out.write(datos); } });
             servidor.start(); return servidor;
         } catch (Exception e) { throw new IllegalStateException(e); }
     }
-    @AfterAll static void detener() { JWKS.stop(0); }
+    void iniciarDocker() throws Exception {
+        try (var socket = new java.net.ServerSocket(0, 0, InetAddress.getLoopbackAddress())) { puertoDocker = socket.getLocalPort(); }
+        contenedor = "validacion-kafka-admin-" + UUID.randomUUID();
+        String red = System.getProperty("digitalfix.pruebas.docker.red", "digitalfix-kafka-verificacion_kafkanet");
+        var proceso = new ProcessBuilder("docker", "run", "--rm", "-d", "--name", contenedor,
+                "--network", red, "-p", "127.0.0.1:" + puertoDocker + ":8086",
+                "-e", "KAFKA_BOOTSTRAP_SERVERS=kafka1:29092,kafka2:29092,kafka3:29092",
+                "-e", "ENTRA_ISSUER=" + ISSUER, "-e", "ENTRA_AUDIENCE=pruebas-locales",
+                "-e", "SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI=http://host.docker.internal:" + JWKS.getAddress().getPort() + "/claves",
+                "digitalfix/kafka-admin:local").redirectErrorStream(true).start();
+        String salida = new String(proceso.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, proceso.waitFor(), salida);
+        try (var http = HttpClient.newHttpClient()) {
+            long limite = System.nanoTime() + Duration.ofSeconds(40).toNanos();
+            while (System.nanoTime() < limite) {
+                try { if (pedir(http, "GET", "/healthz", null, null).statusCode() == 200) return; }
+                catch (java.io.IOException ignored) {}
+                Thread.sleep(300);
+            }
+        }
+        fail("No arrancó Kafka Admin en Docker");
+    }
+    @AfterAll static void detener() throws Exception {
+        JWKS.stop(0);
+        if (contenedor != null) {
+            var proceso = new ProcessBuilder("docker", "stop", contenedor).redirectErrorStream(true).start();
+            proceso.getInputStream().readAllBytes(); proceso.waitFor();
+        }
+    }
 }
